@@ -1,0 +1,335 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users & Auth
+// ---------------------------------------------------------------------------
+
+enum Role {
+  PROJECT_OWNER
+  CAPITAL_PROVIDER
+  ADMIN
+  ANALYST
+  COMPLIANCE
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  passwordHash  String
+  role          Role
+  mfaEnabled    Boolean   @default(false)
+  kycStatus     KycStatus @default(NOT_STARTED)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  projects        Project[]         @relation("ProjectOwnerUser")
+  capitalProvider CapitalProvider?
+  auditLogs       AuditLog[]
+  messagesSent    Message[]         @relation("MessageSender")
+}
+
+enum KycStatus {
+  NOT_STARTED
+  PENDING
+  VERIFIED
+  REJECTED
+  FLAGGED
+}
+
+// ---------------------------------------------------------------------------
+// Projects (capital seekers)
+// ---------------------------------------------------------------------------
+
+enum ProjectStatus {
+  DRAFT
+  SUBMITTED
+  SCREENING
+  ASSESSMENT_COMPLETE
+  IN_STRUCTURING
+  MATCHING
+  IN_DATA_ROOM
+  IN_TRANSACTION
+  CLOSED
+  DECLINED
+}
+
+enum Sector {
+  ENERGY
+  INFRASTRUCTURE
+  REAL_ESTATE
+  MINING
+  OIL_GAS
+  TRADE_COMMODITIES
+  MANUFACTURING
+  HEALTHCARE
+  AGRICULTURE
+  LOGISTICS
+  OTHER
+}
+
+enum Country {
+  UGANDA
+  KENYA
+  TANZANIA
+  RWANDA
+  ZAMBIA
+  GHANA
+  OTHER
+}
+
+enum Instrument {
+  SENIOR_DEBT
+  MEZZANINE
+  EQUITY
+  PROJECT_FINANCE
+  TRADE_FINANCE
+  PRIVATE_CREDIT
+  INFRASTRUCTURE_FINANCE
+  BLENDED
+}
+
+model Project {
+  id                String        @id @default(cuid())
+  ownerId           String
+  owner             User          @relation("ProjectOwnerUser", fields: [ownerId], references: [id])
+
+  companyName       String
+  country           Country
+  sector            Sector
+  description       String        @db.Text
+  fundingRequirement Float
+  currency          String        @default("USD")
+  instrument         Instrument
+  desiredTenorMonths Int?
+
+  existingEquity    Float?
+  revenue           Float?
+  ebitda            Float?
+  existingDebt      Float?
+  hasCollateral     Boolean       @default(false)
+  hasOfftakeContracts Boolean     @default(false)
+  hasGovApprovals   Boolean       @default(false)
+
+  status            ProjectStatus @default(DRAFT)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  submittedAt       DateTime?
+
+  documents         Document[]
+  assessment        Assessment?
+  matches           Match[]
+  transactions      Transaction[]
+  messages          Message[]
+  auditLogs         AuditLog[]
+}
+
+enum DocumentCategory {
+  FINANCIAL_STATEMENTS
+  BUSINESS_PLAN
+  FEASIBILITY_STUDY
+  FINANCIAL_MODEL
+  LICENCE
+  GOV_APPROVAL
+  CONTRACT
+  OFFTAKE_AGREEMENT
+  CORPORATE
+  OTHER
+}
+
+model Document {
+  id          String           @id @default(cuid())
+  projectId   String
+  project     Project          @relation(fields: [projectId], references: [id])
+  category    DocumentCategory
+  fileName    String
+  url         String
+  version     Int              @default(1)
+  uploadedAt  DateTime         @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Capital Readiness Assessment (AI + human review)
+// ---------------------------------------------------------------------------
+
+enum ReviewStatus {
+  AI_DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  RELEASED
+}
+
+model Assessment {
+  id                String       @id @default(cuid())
+  projectId         String       @unique
+  project           Project      @relation(fields: [projectId], references: [id])
+
+  score             Int
+  sponsorScore      Int
+  financialScore    Int
+  projectEconomicsScore Int
+  securityScore     Int
+  regulatoryScore   Int
+  governanceScore   Int
+
+  narrative         String       @db.Text
+  missingDocuments  String[]
+
+  status            ReviewStatus @default(AI_DRAFT)
+  reviewedById      String?
+  reviewNotes       String?      @db.Text
+
+  isPaid            Boolean      @default(false)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Capital Providers
+// ---------------------------------------------------------------------------
+
+model CapitalProvider {
+  id                String    @id @default(cuid())
+  userId            String    @unique
+  user              User      @relation(fields: [userId], references: [id])
+
+  institutionName   String
+  institutionType   String
+  minTicket         Float
+  maxTicket         Float
+  preferredCountries Country[]
+  preferredSectors  Sector[]
+  instruments       Instrument[]
+  minTenorMonths    Int?
+  maxTenorMonths    Int?
+  currency          String    @default("USD")
+  securityRequirements String? @db.Text
+  mandateNotes      String?   @db.Text
+
+  membershipTier    MembershipTier @default(NONE)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  matches           Match[]
+}
+
+enum MembershipTier {
+  NONE
+  PROFESSIONAL
+  INSTITUTIONAL
+}
+
+// ---------------------------------------------------------------------------
+// AI Matching (with mandatory human review gate)
+// ---------------------------------------------------------------------------
+
+model Match {
+  id                String       @id @default(cuid())
+  projectId         String
+  project           Project      @relation(fields: [projectId], references: [id])
+  capitalProviderId String
+  capitalProvider   CapitalProvider @relation(fields: [capitalProviderId], references: [id])
+
+  compatibilityScore Int
+  factors           Json
+  aiRationale        String      @db.Text
+
+  status            ReviewStatus @default(AI_DRAFT)
+  reviewedById      String?
+  createdAt         DateTime     @default(now())
+
+  dataRoomTier      DataRoomTier @default(NONE)
+}
+
+enum DataRoomTier {
+  NONE
+  REGISTERED
+  QUALIFIED
+  NDA_FULL
+}
+
+// ---------------------------------------------------------------------------
+// Transactions
+// ---------------------------------------------------------------------------
+
+enum TransactionStage {
+  INTRODUCED
+  DUE_DILIGENCE
+  TERM_SHEET
+  STRUCTURING
+  LEGAL
+  CLOSING
+  CLOSED
+  LOST
+}
+
+model Transaction {
+  id            String            @id @default(cuid())
+  projectId     String
+  project       Project           @relation(fields: [projectId], references: [id])
+  stage         TransactionStage  @default(INTRODUCED)
+  amount        Float?
+  feePercent    Float?
+  feeAmount     Float?
+  closeDate     DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Revenue (fee-generating events, for admin dashboard)
+// ---------------------------------------------------------------------------
+
+enum RevenueType {
+  ASSESSMENT_FEE
+  STRUCTURING_FEE
+  MANDATE_FEE
+  SUCCESS_FEE
+  MEMBERSHIP_FEE
+}
+
+model RevenueEvent {
+  id        String      @id @default(cuid())
+  type      RevenueType
+  amount    Float
+  projectId String?
+  note      String?
+  createdAt DateTime    @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Messaging
+// ---------------------------------------------------------------------------
+
+model Message {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id])
+  senderId  String
+  sender    User     @relation("MessageSender", fields: [senderId], references: [id])
+  body      String   @db.Text
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Audit Log
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id])
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id])
+  action    String
+  detail    Json?
+  createdAt DateTime @default(now())
+}
